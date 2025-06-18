@@ -91,6 +91,7 @@ type PlayerMessageSender = std::sync::mpsc::Sender<PlayerMessage>;
 type PlayerMessageReciever = std::sync::mpsc::Receiver<PlayerMessage>;
 
 type ApplyVideoFrameFn = Box<dyn FnMut(ColorImage) + Send>;
+type FilterVideoFrameFn = Box<dyn FnMut(&mut ColorImage) + Send>;
 type SubtitleQueue = Arc<Mutex<VecDeque<Subtitle>>>;
 type RingbufProducer<T> = Caching<Arc<HeapRb<T>>, true, false>;
 type RingbufConsumer<T> = Caching<Arc<HeapRb<T>>, false, true>;
@@ -215,6 +216,8 @@ pub struct VideoStreamer {
     video_elapsed_ms: Shared<i64>,
     _audio_elapsed_ms: Shared<i64>,
     apply_video_frame_fn: Option<ApplyVideoFrameFn>,
+    /// Function to filter each video frame
+    pub filter_video_frame_fn: Option<FilterVideoFrameFn>,
 }
 
 /// Streams audio.
@@ -384,7 +387,10 @@ impl Player {
                         && streamer.primary_elapsed_ms().get() >= streamer.elapsed_ms().get()
                     {
                         match streamer.recieve_next_packet_until_frame() {
-                            Ok(frame) => streamer.apply_frame(frame),
+                            Ok(mut frame) => {
+                                streamer.filter_frame(&mut frame);
+                                streamer.apply_frame(frame);
+                            },
                             Err(e) => {
                                 if is_ffmpeg_eof_error(&e) && streamer.is_primary_streamer() {
                                     streamer.player_state().set(PlayerState::EndOfFile)
@@ -1098,6 +1104,7 @@ impl Player {
 
         let stream_decoder = VideoStreamer {
             apply_video_frame_fn: None,
+            filter_video_frame_fn: None,
             duration_ms,
             video_decoder,
             video_stream_index,
@@ -1380,6 +1387,8 @@ pub trait Streamer: Send {
     fn process_frame(&mut self, frame: Self::Frame) -> Result<Self::ProcessedFrame>;
     /// Apply a processed frame
     fn apply_frame(&mut self, _frame: Self::ProcessedFrame) {}
+    /// Apply a filter to a processed frame
+    fn filter_frame(&mut self, _frame: &mut Self::ProcessedFrame) {}
     /// Decode and process a frame.
     fn recieve_next_frame(&mut self) -> Result<Self::ProcessedFrame> {
         match self.decode_frame() {
@@ -1427,6 +1436,12 @@ impl Streamer for VideoStreamer {
         self.video_decoder.receive_frame(&mut decoded_frame)?;
         Ok(decoded_frame)
     }
+    fn filter_frame(&mut self, frame: &mut Self::ProcessedFrame) {
+        if let Some(frame_filter) = self.filter_video_frame_fn.as_mut() {
+            frame_filter(frame)
+        }
+    }
+
     fn apply_frame(&mut self, frame: Self::ProcessedFrame) {
         if let Some(apply_video_frame_fn) = self.apply_video_frame_fn.as_mut() {
             apply_video_frame_fn(frame)
