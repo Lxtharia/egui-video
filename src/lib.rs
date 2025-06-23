@@ -20,7 +20,7 @@ use egui::{
     vec2, Align2, Color32, ColorImage, CornerRadius, FontId, Image, Pos2, Rect, Response, Sense,
     Spinner, TextureHandle, TextureOptions, Ui, Vec2,
 };
-use ffmpeg::error::EAGAIN;
+use libc::EAGAIN;
 use ffmpeg::ffi::{AVERROR, AV_TIME_BASE};
 use ffmpeg::format::context::input::Input;
 use ffmpeg::format::{input, Pixel};
@@ -1426,7 +1426,7 @@ pub trait Streamer: Send {
             let target_ts = millisec_to_timestamp(target_ms, rescale::TIME_BASE);
 
             // TODO: propogate error
-            if self.input_context().seek(target_ts, ..target_ts).is_ok() {
+            if self.input_context().seek(target_ts, ..=target_ts).is_ok() {
                 self.decoder().flush();
                 let mut previous_elapsed_ms = self.elapsed_ms().get();
 
@@ -1523,7 +1523,7 @@ pub trait Streamer: Send {
     fn reset(&mut self) {
         let beginning: i64 = 0;
         let beginning_seek = beginning.rescale((1, 1), rescale::TIME_BASE);
-        let _ = self.input_context().seek(beginning_seek, ..beginning_seek);
+        let _ = self.input_context().seek(beginning_seek, ..=beginning_seek);
         self.decoder().flush();
     }
     /// Keep recieving packets until a frame can be decoded.

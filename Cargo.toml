@@ -11,13 +11,14 @@ authors = ["n00kii"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
+default = []
 from_bytes = ["dep:tempfile"]
 
 [dependencies]
 egui = "0.31"
 atomic = "0.6.0"
-bytemuck = { version = "1.19", features = ["derive"] }
-ffmpeg-the-third = "2.0.1"
+bytemuck = { version = "1.19", features = ["derive"]}
+ffmpeg-the-third = "3.0.2"
 anyhow = "1.0.86"
 timer = "0.2.0"
 chrono = "0.4"
@@ -27,6 +28,7 @@ parking_lot = "0.12.3"
 itertools = "0.14.0"
 nom = "7.1.3"
 cpal = "0.15.3"
+libc = "0.2.173"
 
 [dev-dependencies]
 rfd = "0.15.0"
