@@ -22,7 +22,7 @@ use libc::EAGAIN;
 use ffmpeg::ffi::{AVERROR, AV_TIME_BASE};
 use ffmpeg::format::context::input::Input;
 use ffmpeg::format::{input, Pixel};
-use ffmpeg::frame::Audio;
+use ffmpeg::frame::{self, Audio};
 use ffmpeg::media::Type;
 use ffmpeg::software::scaling::{context::Context, flag::Flags};
 use ffmpeg::util::frame::video::Video;
@@ -216,6 +216,7 @@ pub struct VideoStreamer {
     video_elapsed_ms: Shared<i64>,
     _audio_elapsed_ms: Shared<i64>,
     apply_video_frame_fn: Option<ApplyVideoFrameFn>,
+    current_frame: Option<frame::Video>,
     /// Function to filter each video frame
     pub filter_video_frame_fn: Option<FilterVideoFrameFn>,
 }
@@ -1116,6 +1117,7 @@ impl Player {
             video_elapsed_ms: video_elapsed_ms.clone(),
             input_context,
             player_state: player_state.clone(),
+            current_frame: None,
         };
         let options = PlayerOptions::default();
         let texture_handle =
@@ -1464,8 +1466,21 @@ impl Streamer for VideoStreamer {
         )?;
         scaler.run(&frame, &mut rgb_frame)?;
 
-        let image = video_frame_to_image(rgb_frame);
+        let image = video_frame_to_image(&rgb_frame);
+        self.current_frame = Some(rgb_frame);
         Ok(image)
+    }
+}
+
+impl VideoStreamer {
+    /// Returns the currently shown frame.
+    /// Useful for exporting the frame on a paused video
+    pub fn current_frame(&mut self) -> Option<ColorImage> {
+        self.current_frame.clone().and_then(|frame| {
+            let mut img = video_frame_to_image(&frame);
+            self.filter_frame(&mut img);
+            Some(img)
+        })
     }
 }
 
@@ -1714,7 +1729,7 @@ fn is_ffmpeg_incomplete_error(error: &anyhow::Error) -> bool {
     )
 }
 
-fn video_frame_to_image(frame: Video) -> ColorImage {
+fn video_frame_to_image(frame: &Video) -> ColorImage {
     let size = [frame.width() as usize, frame.height() as usize];
     let data = frame.data(0);
     let stride = frame.stride(0);
@@ -1734,3 +1749,4 @@ fn video_frame_to_image(frame: Video) -> ColorImage {
     }
     ColorImage { size, pixels }
 }
+
