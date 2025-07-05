@@ -503,6 +503,11 @@ impl Player {
         }
     }
 
+    /// Displays a custom image instead in the player
+    pub fn set_current_frame(&mut self, img: ColorImage) {
+        self.texture_handle.set(img, self.options.texture_options);
+    }
+
     /// Create the [`egui::Image`] for the video frame.
     pub fn generate_frame_image(&self, size: Vec2) -> Image {
         Image::new(SizedTexture::new(self.texture_handle.id(), size)).sense(Sense::click())
