@@ -274,6 +274,7 @@ pub struct VideoStreamer {
     video_elapsed_ms: Shared<i64>,
     _audio_elapsed_ms: Shared<i64>,
     frame_cache: VecDeque<(<VideoStreamer as Streamer>::ProcessedFrame, i64, i64)>,
+    pub frame_cache_len: u64,
     current_frame: Option<frame::Video>,
     /// Function to filter each video frame
     pub filter_video_frame_fn: Option<FilterVideoFrameFn>,
@@ -445,9 +446,8 @@ impl Player {
                         && streamer.primary_elapsed_ms().get() >= streamer.elapsed_ms().get()
                     {
                         match streamer.recieve_next_packet_until_frame() {
-                            Ok(mut frame) => {
-                                streamer.filter_frame(&mut frame.0);
-                                streamer.apply_frame(frame);
+                            Ok(frame) => {
+                                return streamer.apply_frame(frame);
                             },
                             Err(e) => {
                                 if is_ffmpeg_eof_error(&e) && streamer.is_primary_streamer() {
@@ -1267,6 +1267,7 @@ impl Player {
             input_context,
             player_state: player_state.clone(),
             frame_cache: VecDeque::<(ColorImage, i64, i64)>::default(),
+            frame_cache_len: 50,
             current_frame: None,
         };
         let options = PlayerOptions::default();
@@ -1606,14 +1607,12 @@ impl Streamer for VideoStreamer {
     }
 
     fn apply_frame(&mut self, frame: (Self::ProcessedFrame, i64, i64)) -> bool {
-        let mut duplicated = frame.clone();
-        self.filter_frame(&mut duplicated.0);
         // some logic here to deal with synchronization
         // store all frames in the cache, display current frame until audio device is more near a future frame
-        self.frame_cache.push_back(duplicated);
+        self.frame_cache.push_back(frame);
 
         // full after like 50 frames
-        self.frame_cache.len() >= 50
+        self.frame_cache.len() as u64 >= self.frame_cache_len
     }
     fn process_frame(&mut self, frame: Self::Frame) -> Result<(Self::ProcessedFrame, i64, i64)> {
         let mut rgb_frame = Video::empty();
@@ -1632,8 +1631,9 @@ impl Streamer for VideoStreamer {
         let duration = unsafe { (*frame.as_ptr()).duration };
         //println!("writing video chunk : pts {} duration {}", presentation_time_ms, duration);
 
-        let image = video_frame_to_image(&rgb_frame);
+        let mut image = video_frame_to_image(&rgb_frame);
         self.current_frame = Some(rgb_frame);
+        // self.filter_frame(&mut image);
         Ok((image, presentation_time_ms, duration))
     }
 }
