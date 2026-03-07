@@ -131,7 +131,6 @@ enum PlayerMessage {
 type PlayerMessageSender = std::sync::mpsc::Sender<PlayerMessage>;
 type PlayerMessageReciever = std::sync::mpsc::Receiver<PlayerMessage>;
 
-type ApplyVideoFrameFn = Box<dyn FnMut(ColorImage) + Send>;
 type FilterVideoFrameFn = Box<dyn FnMut(&mut ColorImage) + Send>;
 type SubtitleQueue = Arc<Mutex<VecDeque<Subtitle>>>;
 
@@ -274,7 +273,6 @@ pub struct VideoStreamer {
     input_context: Input,
     video_elapsed_ms: Shared<i64>,
     _audio_elapsed_ms: Shared<i64>,
-    apply_video_frame_fn: Option<ApplyVideoFrameFn>,
     frame_cache: VecDeque<(<VideoStreamer as Streamer>::ProcessedFrame, i64, i64)>,
     current_frame: Option<frame::Video>,
     /// Function to filter each video frame
@@ -436,8 +434,6 @@ impl Player {
         }
     }
     fn spawn_timers(&mut self) {
-        let mut texture_handle = self.texture_handle.clone();
-        let texture_options = self.options.texture_options;
         let ctx = self.ctx_ref.clone();
         let nanos = 1e9 / self.framerate;
         let wait_duration = Duration::nanoseconds(nanos as i64);
@@ -450,7 +446,7 @@ impl Player {
                     {
                         match streamer.recieve_next_packet_until_frame() {
                             Ok(mut frame) => {
-                                streamer.filter_frame(&mut frame);
+                                streamer.filter_frame(&mut frame.0);
                                 streamer.apply_frame(frame);
                             },
                             Err(e) => {
@@ -464,10 +460,6 @@ impl Player {
             }
             return false;
         }
-
-        self.video_streamer.lock().apply_video_frame_fn = Some(Box::new(move |frame| {
-            texture_handle.set(frame, texture_options)
-        }));
 
         let video_streamer_ref = Arc::downgrade(&self.video_streamer);
 
@@ -1266,7 +1258,6 @@ impl Player {
         let duration_ms = timestamp_to_millisec(input_context.duration(), AV_TIME_BASE_RATIONAL); // in sec
 
         let stream_decoder = VideoStreamer {
-            apply_video_frame_fn: None,
             filter_video_frame_fn: None,
             duration_ms,
             video_decoder,
@@ -1558,7 +1549,7 @@ pub trait Streamer: Send {
     /// Process a decoded frame.
     fn process_frame(&mut self, frame: Self::Frame) -> Result<(Self::ProcessedFrame, i64, i64)>;
     /// Apply a processed frame
-    fn apply_frame(&mut self, _frame: Self::ProcessedFrame) {}
+    fn apply_frame(&mut self, _frame: (Self::ProcessedFrame, i64, i64)) -> bool { false }
     /// Apply a filter to a processed frame
     fn filter_frame(&mut self, _frame: &mut Self::ProcessedFrame) {}
     /// Decode and process a frame.
@@ -1615,13 +1606,11 @@ impl Streamer for VideoStreamer {
     }
 
     fn apply_frame(&mut self, frame: (Self::ProcessedFrame, i64, i64)) -> bool {
-        // TODO: Check order
-        if let Some(apply_video_frame_fn) = self.apply_video_frame_fn.as_mut() {
-            apply_video_frame_fn(frame)
-        }
+        let mut duplicated = frame.clone();
+        self.filter_frame(&mut duplicated.0);
         // some logic here to deal with synchronization
         // store all frames in the cache, display current frame until audio device is more near a future frame
-        self.frame_cache.push_back(frame);
+        self.frame_cache.push_back(duplicated);
 
         // full after like 50 frames
         self.frame_cache.len() >= 50
@@ -2007,8 +1996,13 @@ fn video_frame_to_image(frame: &Video) -> ColorImage {
         let begin = line * stride;
         let end = begin + byte_width;
         let data_line = &data[begin..end];
-        let pixel_line: &[Color32] = bytemuck::cast_slice(data_line);
-        pixels.extend_from_slice(pixel_line);
+        // let pixel_line: &[Color32] = bytemuck::cast_slice(data_line);
+        // pixels.extend_from_slice(&pixel_line);
+        pixels.extend(
+            data_line
+                .chunks_exact(pixel_size_bytes)
+                .map(|p| Color32::from_rgb(p[0], p[1], p[2])),
+        );
     }
     
     ColorImage { size, pixels }
