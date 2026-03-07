@@ -24,7 +24,7 @@ use libc::EAGAIN;
 use ffmpeg::ffi::{AVERROR, AV_TIME_BASE};
 use ffmpeg::format::context::input::Input;
 use ffmpeg::format::{input, Pixel};
-use ffmpeg::frame::Audio;
+use ffmpeg::frame::{self, Audio};
 use ffmpeg::media::Type;
 use ffmpeg::software::scaling::{context::Context, flag::Flags};
 use ffmpeg::util::frame::video::Video;
@@ -131,7 +131,7 @@ enum PlayerMessage {
 type PlayerMessageSender = std::sync::mpsc::Sender<PlayerMessage>;
 type PlayerMessageReciever = std::sync::mpsc::Receiver<PlayerMessage>;
 
-type ApplyVideoFrameFn = Box<dyn FnMut(ColorImage) + Send>;
+type FilterVideoFrameFn = Box<dyn FnMut(&mut ColorImage) + Send>;
 type SubtitleQueue = Arc<Mutex<VecDeque<Subtitle>>>;
 
 struct StreamingAudioChunk {
@@ -273,8 +273,10 @@ pub struct VideoStreamer {
     input_context: Input,
     video_elapsed_ms: Shared<i64>,
     _audio_elapsed_ms: Shared<i64>,
-    apply_video_frame_fn: Option<ApplyVideoFrameFn>,
     frame_cache: VecDeque<(<VideoStreamer as Streamer>::ProcessedFrame, i64, i64)>,
+    current_frame: Option<frame::Video>,
+    /// Function to filter each video frame
+    pub filter_video_frame_fn: Option<FilterVideoFrameFn>,
 }
 
 /// Streams audio.
@@ -432,8 +434,6 @@ impl Player {
         }
     }
     fn spawn_timers(&mut self) {
-        let mut texture_handle = self.texture_handle.clone();
-        let texture_options = self.options.texture_options;
         let ctx = self.ctx_ref.clone();
         let nanos = 1e9 / self.framerate;
         let wait_duration = Duration::nanoseconds(nanos as i64);
@@ -445,8 +445,9 @@ impl Player {
                         && streamer.primary_elapsed_ms().get() >= streamer.elapsed_ms().get()
                     {
                         match streamer.recieve_next_packet_until_frame() {
-                            Ok(frame) => {
-                                return streamer.apply_frame(frame);
+                            Ok(mut frame) => {
+                                streamer.filter_frame(&mut frame.0);
+                                streamer.apply_frame(frame);
                             },
                             Err(e) => {
                                 if is_ffmpeg_eof_error(&e) && streamer.is_primary_streamer() {
@@ -459,10 +460,6 @@ impl Player {
             }
             return false;
         }
-
-        self.video_streamer.lock().apply_video_frame_fn = Some(Box::new(move |frame| {
-            texture_handle.set(frame, texture_options)
-        }));
 
         let video_streamer_ref = Arc::downgrade(&self.video_streamer);
 
@@ -586,6 +583,11 @@ impl Player {
             self.reset();
             self.resume();
         }
+    }
+
+    /// Displays a custom image instead in the player
+    pub fn set_current_frame(&mut self, img: ColorImage) {
+        self.texture_handle.set(img, self.options.texture_options);
     }
 
     /// Create the [`egui::Image`] for the video frame.
@@ -1256,7 +1258,7 @@ impl Player {
         let duration_ms = timestamp_to_millisec(input_context.duration(), AV_TIME_BASE_RATIONAL); // in sec
 
         let stream_decoder = VideoStreamer {
-            apply_video_frame_fn: None,
+            filter_video_frame_fn: None,
             duration_ms,
             video_decoder,
             video_stream_index,
@@ -1265,6 +1267,7 @@ impl Player {
             input_context,
             player_state: player_state.clone(),
             frame_cache: VecDeque::<(ColorImage, i64, i64)>::default(),
+            current_frame: None,
         };
         let options = PlayerOptions::default();
         let texture_handle =
@@ -1546,7 +1549,9 @@ pub trait Streamer: Send {
     /// Process a decoded frame.
     fn process_frame(&mut self, frame: Self::Frame) -> Result<(Self::ProcessedFrame, i64, i64)>;
     /// Apply a processed frame
-    fn apply_frame(&mut self, _frame: (Self::ProcessedFrame, i64, i64)) -> bool { return false; }
+    fn apply_frame(&mut self, _frame: (Self::ProcessedFrame, i64, i64)) -> bool { false }
+    /// Apply a filter to a processed frame
+    fn filter_frame(&mut self, _frame: &mut Self::ProcessedFrame) {}
     /// Decode and process a frame.
     fn recieve_next_frame(&mut self) -> Result<(Self::ProcessedFrame, i64, i64)> {
         match self.decode_frame() {
@@ -1594,10 +1599,18 @@ impl Streamer for VideoStreamer {
         self.video_decoder.receive_frame(&mut decoded_frame)?;
         Ok(decoded_frame)
     }
+    fn filter_frame(&mut self, frame: &mut Self::ProcessedFrame) {
+        if let Some(frame_filter) = self.filter_video_frame_fn.as_mut() {
+            frame_filter(frame)
+        }
+    }
+
     fn apply_frame(&mut self, frame: (Self::ProcessedFrame, i64, i64)) -> bool {
+        let mut duplicated = frame.clone();
+        self.filter_frame(&mut duplicated.0);
         // some logic here to deal with synchronization
         // store all frames in the cache, display current frame until audio device is more near a future frame
-        self.frame_cache.push_back(frame);
+        self.frame_cache.push_back(duplicated);
 
         // full after like 50 frames
         self.frame_cache.len() >= 50
@@ -1619,8 +1632,21 @@ impl Streamer for VideoStreamer {
         let duration = unsafe { (*frame.as_ptr()).duration };
         //println!("writing video chunk : pts {} duration {}", presentation_time_ms, duration);
 
-        let image = video_frame_to_image(rgb_frame);
+        let image = video_frame_to_image(&rgb_frame);
+        self.current_frame = Some(rgb_frame);
         Ok((image, presentation_time_ms, duration))
+    }
+}
+
+impl VideoStreamer {
+    /// Returns the currently shown frame.
+    /// Useful for exporting the frame on a paused video
+    pub fn current_frame(&mut self) -> Option<ColorImage> {
+        self.current_frame.clone().and_then(|frame| {
+            let mut img = video_frame_to_image(&frame);
+            self.filter_frame(&mut img);
+            Some(img)
+        })
     }
 }
 
@@ -1956,7 +1982,7 @@ fn is_ffmpeg_incomplete_error(error: &anyhow::Error) -> bool {
     )
 }
 
-fn video_frame_to_image(frame: Video) -> ColorImage {
+fn video_frame_to_image(frame: &Video) -> ColorImage {
     let size = [frame.width() as usize, frame.height() as usize];
     let data = frame.data(0);
     let stride = frame.stride(0);
@@ -1970,9 +1996,15 @@ fn video_frame_to_image(frame: Video) -> ColorImage {
         let begin = line * stride;
         let end = begin + byte_width;
         let data_line = &data[begin..end];
-        let pixel_line: &[Color32] = bytemuck::cast_slice(data_line);
-        pixels.extend_from_slice(pixel_line);
+        // let pixel_line: &[Color32] = bytemuck::cast_slice(data_line);
+        // pixels.extend_from_slice(&pixel_line);
+        pixels.extend(
+            data_line
+                .chunks_exact(pixel_size_bytes)
+                .map(|p| Color32::from_rgb(p[0], p[1], p[2])),
+        );
     }
     
     ColorImage { size, pixels }
 }
+
