@@ -235,10 +235,10 @@ pub struct Player {
     temp_file: Option<NamedTempFile>,
     video_elapsed_ms: Shared<i64>,
     audio_elapsed_ms: Shared<i64>,
-    audio_device_time_ms: Shared<i64>,
+    pub audio_device_time_ms: Shared<i64>,
     subtitle_elapsed_ms: Shared<i64>,
     seeking_signal: Shared<bool>,
-    video_elapsed_ms_override: Option<i64>,
+    pub video_elapsed_ms_override: Option<i64>,
     subtitles_queue: SubtitleQueue,
     current_subtitles: Vec<Subtitle>,
     input_path: String,
@@ -274,7 +274,7 @@ pub struct VideoStreamer {
     video_elapsed_ms: Shared<i64>,
     _audio_elapsed_ms: Shared<i64>,
     apply_video_frame_fn: Option<ApplyVideoFrameFn>,
-    frame_cache: VecDeque<(<VideoStreamer as Streamer>::ProcessedFrame, i64, i64)>,
+    pub frame_cache: VecDeque<(<VideoStreamer as Streamer>::ProcessedFrame, i64, i64)>,
 }
 
 /// Streams audio.
@@ -465,13 +465,14 @@ impl Player {
         }));
 
         let video_streamer_ref = Arc::downgrade(&self.video_streamer);
-
-        let video_timer_guard = self.video_timer.schedule_repeating(Duration::zero(), move || {
-            let sleep = play(&video_streamer_ref);
-            if sleep {
-                std::thread::sleep(core::time::Duration::from_nanos(nanos as u64));
-            }
-        });
+        let video_timer_guard = self
+            .video_timer
+            .schedule_repeating(Duration::zero(), move || {
+                let sleep = play(&video_streamer_ref);
+                if sleep {
+                    std::thread::sleep(core::time::Duration::from_nanos(nanos as u64));
+                }
+            });
 
         self.video_thread = Some(video_timer_guard);
 
@@ -496,8 +497,9 @@ impl Player {
         }
 
         // have a general timer to repaint egui that doesn't have to wait for ffmpeg
+        let player_state = self.player_state.clone();
         let synchro_timer_guard = self.synchro_timer.schedule_repeating(wait_duration, move || {
-            ctx.request_repaint();
+            if player_state.get() == PlayerState::Playing { ctx.request_repaint(); }
         });
         self.synchro_thread = Some(synchro_timer_guard);
     }
@@ -589,36 +591,46 @@ impl Player {
     }
 
     /// Create the [`egui::Image`] for the video frame.
-    pub fn generate_frame_image(&mut self, size: Vec2) -> Image {
+    pub fn generate_frame_image(&'_ mut self, size: Vec2) -> Image<'_> {
         let mut vs = self.video_streamer.lock();
-        let frame_cache: &mut VecDeque<(ColorImage, i64, i64)> = &mut vs.frame_cache;
+        println!("Rendering Frame. VS: {:?}", vs.player_state().get());
+        if vs.player_state().get() == PlayerState::Playing {
 
-        let mut found = false;
+            let mut found = false;
 
-        // get the closest
-        let mut closest = 0;
-        let dtime = self.audio_device_time_ms.get();
-        for (i, frame) in frame_cache.iter().enumerate() {
-            if i >= frame_cache.len() - 1 {
-                continue;
+            // get the closest
+            let mut closest = 0;
+            let dtime = self.audio_device_time_ms.get();
+            let frame_cache: &mut VecDeque<(ColorImage, i64, i64)> = &mut vs.frame_cache;
+
+            for (i, frame) in frame_cache.iter().enumerate() {
+                if i >= frame_cache.len() - 1 {
+                    continue;
+                }
+                if dtime >= frame.1 && dtime < frame_cache[i + 1].1 {
+                    closest = i;
+                    found = true;
+                    break;
+                }
             }
-            if dtime >= frame.1 && dtime < frame_cache[i + 1].1 {
-                closest = i;
-                found = true;
-                break;
+            // remove any frames that are before the closest (if needed)
+            if closest > 0 {
+                frame_cache.drain(0..closest);
             }
-        }
-        // remove any frames that are before the closest (if needed)
-        if closest > 0 {
-            frame_cache.drain(0..closest);
-        }
 
-        if !frame_cache.is_empty() && found {
-            let frame = frame_cache.pop_front().unwrap().0;
-            let texture_options = self.options.texture_options;
-            self.texture_handle.set(frame, texture_options);
-        }
+            if !frame_cache.is_empty() {
+                if found {
+                    let frame = frame_cache.pop_front().unwrap();
+                    // self.video_elapsed_ms_override = Some(frame.1);
+                    let texture_options = self.options.texture_options;
+                    self.texture_handle.set(frame.0, texture_options);
+                } else {
+                    // frame_cache.front().unwrap().clone()
+                    // frame_cache.pop_front().unwrap()
+                };
+            }
 
+        }
         Image::new(SizedTexture::new(self.texture_handle.id(), size)).sense(Sense::click())
     }
 
@@ -1886,7 +1898,7 @@ impl AudioDeviceCallback {
             for stream in self.sample_streams.iter() {
                 // clear until there's nothing left
                 while let Ok(_) = stream.sample_consumer.try_recv() {
-                    //println!("draining audio receiver...");
+                    // println!("draining audio receiver...");
                 }
             }
             self.seeking.as_ref().unwrap().set(false);
@@ -1897,7 +1909,7 @@ impl AudioDeviceCallback {
                 //     "playing audio chunk : pts {} duration {}",
                 //     stream.chunks.as_ref().unwrap().chunk.presentation_time_ms,
                 //     stream.chunks.as_ref().unwrap().chunk.duration
-                // )
+                // );
                 // figure out where we're starting
                 let base_time = stream.chunks.as_ref().unwrap().chunk.presentation_time_ms as f64;
                 let duration = stream.chunks.as_ref().unwrap().chunk.duration as f64;
