@@ -431,7 +431,6 @@ impl Player {
                         && streamer.primary_elapsed_ms().get() >= streamer.elapsed_ms().get()
                     {
                         match streamer.receive_next_packet_until_frame() {
-                            Ok(frame) => streamer.apply_frame(frame),
                             Ok(mut frame) => {
                                 streamer.filter_frame(&mut frame);
                                 streamer.apply_frame(frame);
