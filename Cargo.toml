@@ -17,7 +17,7 @@ from_bytes = ["dep:tempfile"]
 egui = "0.31.1"
 atomic = "0.6.0"
 bytemuck = { version = "1.22", features = ["derive"]}
-ffmpeg-the-third = "4.0.1"
+ffmpeg-the-third = "5.0.0"
 anyhow = "1.0.98"
 timer = "0.2.0"
 chrono = "0.4.41"
