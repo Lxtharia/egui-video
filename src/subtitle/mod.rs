@@ -70,14 +70,14 @@ impl Subtitle {
         self.remaining_duration_ms = duration_ms;
         self
     }
-    pub(crate) fn from_ffmpeg_rect(rect: ffmpeg::subtitle::Rect) -> Result<Self> {
-        match rect {
-            ffmpeg::subtitle::Rect::Ass(ass) => parse_ass_subtitle(ass.get()),
-            ffmpeg::subtitle::Rect::Bitmap(_bitmap) => {
+    pub(crate) fn from_ffmpeg_rect(rect: ffmpeg::subtitle::RectRef) -> Result<Self> {
+        match rect.kind() {
+            ffmpeg::subtitle::Type::Ass => parse_ass_subtitle(rect.ass().unwrap_or("[ No Subtitle available ]")),
+            ffmpeg::subtitle::Type::Bitmap => {
                 Ok(Subtitle::from_text("[ unsupported bitmap subtitle ]").with_duration_ms(500))
             }
-            ffmpeg::subtitle::Rect::None(_none) => anyhow::bail!("no subtitle"),
-            ffmpeg::subtitle::Rect::Text(text) => Ok(Subtitle::from_text(text.get())),
+            ffmpeg::subtitle::Type::None => anyhow::bail!("no subtitle"),
+            ffmpeg::subtitle::Type::Text => Ok(Subtitle::from_text(rect.text().unwrap_or("[ No Text Subtitle available ]"))),
         }
     }
 }

@@ -6,7 +6,6 @@ license = "MIT"
 description = "a video library for egui"
 repository = "https://github.com/n00kii/egui-video"
 readme = "README.md"
-authors = ["n00kii"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -14,10 +13,10 @@ authors = ["n00kii"]
 from_bytes = ["dep:tempfile"]
 
 [dependencies]
-egui = "0.31.1"
+egui = { version = "0.31.1", features = ["bytemuck"] }
 atomic = "0.6.0"
-bytemuck = { version = "1.22", features = ["derive"]}
-ffmpeg-the-third = "5.0.0"
+bytemuck = { version = "1.23.1", features = ["derive"] }
+ffmpeg-the-third = "6.0.0"
 anyhow = "1.0.98"
 timer = "0.2.0"
 chrono = "0.4.41"
